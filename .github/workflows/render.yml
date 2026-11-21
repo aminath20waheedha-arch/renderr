@@ -1,8 +1,12 @@
 name: Render the episode
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master]
+    inputs:
+      mode:
+        description: 'preview = half size, much faster. full = 1920x1080'
+        type: choice
+        options: [preview, full]
+        default: preview
 
 jobs:
   render:
@@ -43,7 +47,9 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}/studio
         run: |
           mkdir -p out
-          npx remotion render src/index.ts HeartSwapLong out/heart-swap-long-raw.mp4 --log error --gl=swangle --concurrency 4
+          SCALE=1
+          if [ "${{ github.event.inputs.mode }}" = "preview" ]; then SCALE=0.5; fi
+          npx remotion render src/index.ts HeartSwapLong out/heart-swap-long-raw.mp4 --log info --gl=swangle --concurrency 4 --scale $SCALE
 
       - name: Master the audio (-14 LUFS)
         working-directory: ${{ env.PROJECT_DIR }}
@@ -51,6 +57,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: what-if-heart-swap-2min
+          name: what-if-heart-swap-2min-${{ github.event.inputs.mode }}
           path: ${{ env.PROJECT_DIR }}/what-if-heart-swap-2min.mp4
           retention-days: 14
