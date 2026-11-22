@@ -1,62 +1,92 @@
-name: Render the episode
+name: Render Balance 100x
+
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'preview = half size, much faster. full = 1920x1080'
+      resolution:
+        description: "720p is about 2x faster"
+        default: "1080p"
         type: choice
-        options: [preview, full]
-        default: preview
+        options: ["720p", "1080p"]
+      style:
+        description: "Look"
+        default: "dusk"
+        type: choice
+        options: ["dusk", "midnight", "golden", "neon", "storybook"]
+      preview:
+        description: "Only render the first 30 s at half size (quick test)"
+        default: false
+        type: boolean
 
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
-      # If you uploaded the zip as-is (no unzipping), unpack it here.
-      - name: Unpack the zip if the project is still zipped
-        run: |
-          if [ ! -d studio ]; then
-            Z=$(ls *.zip | head -n 1)
-            unzip -q "$Z"
-            D=$(find . -maxdepth 2 -type d -name studio | head -n 1)
-            echo "PROJECT_DIR=$(dirname "$D")" >> "$GITHUB_ENV"
-          else
-            echo "PROJECT_DIR=." >> "$GITHUB_ENV"
-          fi
+      - name: Unzip the project
+        run: unzip -q balance*.zip
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: "20"
 
-      - name: System packages (ffmpeg and the libraries Chrome needs)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg, Python and Node dependencies
+        working-directory: aitrends-2d-studio
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0t64 libasound2t64 libxrandr2 libxkbcommon-dev libxfixes3 libxcomposite1 libxdamage1 libgbm-dev libcups2t64 || true
+          python -m pip install numpy scipy
+          npm install
+          npx playwright install --with-deps chromium
 
-      - name: Install
-        working-directory: ${{ env.PROJECT_DIR }}/studio
+      - name: Set resolution and style
+        working-directory: aitrends-2d-studio
         run: |
-          npm ci
-          npx remotion browser ensure
+          python - <<'PY'
+          import json
+          p = "projects/balance-100x/config.json"
+          c = json.load(open(p))
+          c["resolution"] = "${{ github.event.inputs.resolution }}"
+          c["style"] = "${{ github.event.inputs.style }}"
+          json.dump(c, open(p, "w"), indent=2)
+          print(c)
+          PY
 
-      - name: Render (about 3,750 frames, 2:05)
-        working-directory: ${{ env.PROJECT_DIR }}/studio
+      - name: Preview (first 30 s)
+        if: ${{ github.event.inputs.preview == 'true' }}
+        working-directory: aitrends-2d-studio
+        run: node render.mjs --project projects/balance-100x --from 0 --to 30 --scale 0.5 --format jpeg
+
+      - name: Render frames
+        if: ${{ github.event.inputs.preview != 'true' }}
+        working-directory: aitrends-2d-studio
+        run: node render.mjs --project projects/balance-100x --format jpeg 2>&1 | tee build-render.log | tail -n 60
+
+      - name: Mix music, SFX and voice, then mux the MP4
+        if: ${{ github.event.inputs.preview != 'true' }}
+        working-directory: aitrends-2d-studio
         run: |
-          mkdir -p out
-          SCALE=1
-          if [ "${{ github.event.inputs.mode }}" = "preview" ]; then SCALE=0.5; fi
-          npx remotion render src/index.ts HeartSwapLong out/heart-swap-long-raw.mp4 --log info --gl=swangle --concurrency 4 --scale $SCALE
+          python audio/mix.py --project projects/balance-100x
+          ls -lh projects/balance-100x/out
 
-      - name: Master the audio (-14 LUFS)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: python3 finalize.py studio/out/heart-swap-long-raw.mp4 what-if-heart-swap-2min.mp4
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload the finished video
+        if: ${{ github.event.inputs.preview != 'true' }}
+        uses: actions/upload-artifact@v4
         with:
-          name: what-if-heart-swap-2min-${{ github.event.inputs.mode }}
-          path: ${{ env.PROJECT_DIR }}/what-if-heart-swap-2min.mp4
+          name: balance-100x-mp4
+          path: aitrends-2d-studio/projects/balance-100x/out/*.mp4
           retention-days: 14
+
+      - name: Upload the preview
+        if: ${{ github.event.inputs.preview == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: balance-100x-preview
+          path: aitrends-2d-studio/projects/balance-100x/build/preview.mp4
+          retention-days: 7
